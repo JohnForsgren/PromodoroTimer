@@ -7,17 +7,20 @@ namespace PromodoroTimerGemini
     /// </summary>
     public partial class App : Application
     {
+        // In App.xaml.cs
         protected override void OnStartup(StartupEventArgs e)
         {
-            base.OnStartup(e);
-
-            // Create and show the initial setup window
-            // FIX: The class name is 'SetupWindow', not 'PomodoroWindows'.
-            SetupWindow setupWindow = new SetupWindow();
-
-            // Assign it as the main window so the app knows when to shut down
-            this.MainWindow = setupWindow;
-            setupWindow.Show();
+            try
+            {
+                base.OnStartup(e);
+                SetupWindow setupWindow = new SetupWindow();
+                this.MainWindow = setupWindow;
+                setupWindow.Show();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"A critical error occurred and the application must close.\n\nError: {ex.Message}", "Application Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
     }
 }

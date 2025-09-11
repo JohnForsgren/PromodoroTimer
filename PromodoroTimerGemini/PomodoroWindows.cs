@@ -27,24 +27,20 @@ namespace PromodoroTimerGemini
             this.WindowStartupLocation = WindowStartupLocation.CenterScreen;
             this.FontFamily = new FontFamily("Segoe UI");
 
-            // NEW: Make the setup window transparent and borderless
             this.WindowStyle = WindowStyle.None;
             this.AllowsTransparency = true;
             this.Background = Brushes.Transparent;
             this.ResizeMode = ResizeMode.NoResize;
 
-            // Set the application icon.
             try
             {
-                // FIX: Switched to .ico format for proper transparency support in Windows.
                 this.Icon = new BitmapImage(new Uri("pack://application:,,,/Assets/icon.ico"));
             }
             catch (Exception)
             {
-                // Icon not found, do nothing. The app will use the default icon.
+                // Icon not found, do nothing.
             }
 
-            // NEW: Updated XAML for a modern, transparent look with a custom close button.
             string setupXaml = @"
             <Grid xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'>
                 <Border Background='#EEF0F0F0' CornerRadius='12'>
@@ -72,7 +68,6 @@ namespace PromodoroTimerGemini
             Button startButton = (Button)rootElement.FindName("StartButton");
             Button closeButton = (Button)rootElement.FindName("CloseButton");
 
-            // NEW: Add event handlers for the new close button and to allow dragging the window.
             startButton.Click += StartButton_Click;
             closeButton.Click += (s, e) => this.Close();
             this.minutesTextBox.PreviewTextInput += MinutesTextBox_PreviewTextInput;
@@ -106,14 +101,18 @@ namespace PromodoroTimerGemini
     public class TimerWindow : Window
     {
         private TextBlock timerText;
-        private Border controlsPanel;
         private Button pausePlayButton;
+        private Border timerBackground;
+        private Brush originalTimerBackground;
 
         private DispatcherTimer timer;
+        private DispatcherTimer topmostTimer; // New timer to keep window on top
         private TimeSpan totalTime;
         private TimeSpan timeRemaining;
         private bool isPaused = false;
+        private bool hasFinished = false; // Flag to track if timer has hit zero
         private Window setupWindow;
+        private NotificationWindow notification;
 
         public TimerWindow(TimeSpan duration, Window parentSetupWindow)
         {
@@ -192,10 +191,12 @@ namespace PromodoroTimerGemini
             this.Content = rootElement;
 
             timerText = (TextBlock)rootElement.FindName("TimerText");
-            controlsPanel = (Border)rootElement.FindName("ControlsPanel");
             pausePlayButton = (Button)rootElement.FindName("PausePlayButton");
             var refreshButton = (Button)rootElement.FindName("RefreshButton");
             var closeButton = (Button)rootElement.FindName("CloseButton");
+
+            timerBackground = (Border)rootElement.FindName("TimerBackground");
+            originalTimerBackground = timerBackground.Background;
 
             var loadedStyle = (Style)this.Resources["ControlButton"];
             pausePlayButton.Style = loadedStyle;
@@ -207,33 +208,57 @@ namespace PromodoroTimerGemini
             refreshButton.Click += RefreshButton_Click;
             closeButton.Click += CloseButton_Click;
 
+            // Main timer for counting down/up
             timer = new DispatcherTimer();
             timer.Interval = TimeSpan.FromSeconds(1);
             timer.Tick += Timer_Tick;
 
+            // FIX: Robust "Always on Top" timer
+            topmostTimer = new DispatcherTimer();
+            topmostTimer.Interval = TimeSpan.FromSeconds(2);
+            topmostTimer.Tick += (s, e) => { this.Topmost = true; };
+
             UpdateTimerText();
             timer.Start();
+            topmostTimer.Start();
         }
 
         private void Timer_Tick(object sender, EventArgs e)
         {
-            if (timeRemaining > TimeSpan.Zero)
+            // Always tick time down, even into negatives
+            timeRemaining = timeRemaining.Add(TimeSpan.FromSeconds(-1));
+
+            // Check if we just passed zero for the first time
+            if (!hasFinished && timeRemaining < TimeSpan.Zero)
             {
-                timeRemaining = timeRemaining.Add(TimeSpan.FromSeconds(-1));
+                hasFinished = true; // Set flag so this only runs once
+                timerBackground.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#CC990000")); // Dark Red
+                pausePlayButton.IsEnabled = false;
+
+                // Show the notification window
+                if (notification == null || !notification.IsVisible)
+                {
+                    notification = new NotificationWindow("Timer Finished!");
+                    notification.Show();
+                }
             }
-            else
+
+            // Check for overtime warning (50% of original time)
+            TimeSpan overtimeThreshold = TimeSpan.FromSeconds(totalTime.TotalSeconds * -0.5);
+            if (hasFinished && timeRemaining <= overtimeThreshold)
             {
-                timer.Stop();
-                // FIX: Show custom notification window instead of playing a sound.
-                NotificationWindow notification = new NotificationWindow();
-                notification.Show();
+                timerBackground.BorderBrush = Brushes.Orange;
+                timerBackground.BorderThickness = new Thickness(2);
             }
+
             UpdateTimerText();
         }
 
         private void UpdateTimerText()
         {
-            timerText.Text = $"{timeRemaining:mm\\:ss}";
+            // Handle negative time display
+            string sign = timeRemaining.Ticks < 0 ? "-" : "";
+            timerText.Text = $"{sign}{timeRemaining.Duration():mm\\:ss}";
         }
 
         private void PausePlayButton_Click(object sender, RoutedEventArgs e)
@@ -253,6 +278,16 @@ namespace PromodoroTimerGemini
 
         private void RefreshButton_Click(object sender, RoutedEventArgs e)
         {
+            if (notification != null) notification.Close(); // Close notification on restart
+
+            // Reset visual state
+            timerBackground.Background = originalTimerBackground;
+            timerBackground.BorderBrush = null;
+            timerBackground.BorderThickness = new Thickness(0);
+            pausePlayButton.IsEnabled = true;
+            hasFinished = false;
+
+            // Reset timer logic
             timeRemaining = totalTime;
             isPaused = false;
             pausePlayButton.Content = "⏸";
@@ -262,51 +297,60 @@ namespace PromodoroTimerGemini
 
         private void CloseButton_Click(object sender, RoutedEventArgs e)
         {
+            // Stop all timers before closing
             timer.Stop();
+            topmostTimer.Stop();
+            if (notification != null) notification.Close();
             setupWindow.Show();
             this.Close();
         }
     }
 
+
     // =============================================================================================
-    // NEW: NOTIFICATION WINDOW
+    // NOTIFICATION WINDOW
     // =============================================================================================
     public class NotificationWindow : Window
     {
-        public NotificationWindow()
+        public NotificationWindow(string message)
         {
-            this.Width = 350;
-            this.Height = 100;
-            this.WindowStyle = WindowStyle.None;
-            this.ResizeMode = ResizeMode.NoResize;
+            this.Width = 250;
+            this.Height = 80;
             this.ShowInTaskbar = false;
             this.Topmost = true;
-            this.Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#FFF0F0F0"));
+            this.WindowStyle = WindowStyle.None;
+            this.AllowsTransparency = true;
+            this.Background = Brushes.Transparent;
+            this.ResizeMode = ResizeMode.NoResize;
 
-            // Position in bottom-right corner
-            this.WindowStartupLocation = WindowStartupLocation.Manual;
-            this.Left = SystemParameters.PrimaryScreenWidth - this.Width - 15;
-            this.Top = SystemParameters.WorkArea.Height - this.Height - 15;
+            var screenWidth = SystemParameters.WorkArea.Width;
+            var screenHeight = SystemParameters.WorkArea.Height;
+            this.Left = screenWidth - this.Width - 10;
+            this.Top = screenHeight - this.Height - 10;
 
-            string notificationXaml = @"
+            string notifyXaml = @"
             <Grid xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'>
-                <Border BorderBrush='#CCCCCC' BorderThickness='1' CornerRadius='5'>
-                    <Grid Margin='15'>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height='*' />
-                            <RowDefinition Height='Auto' />
-                        </Grid.RowDefinitions>
-                        <TextBlock Grid.Row='0' Text='The Pomodoro timer has finished!' FontSize='16' Foreground='#333' VerticalAlignment='Center' Textwrapping='Wrap'/>
-                        <Button Grid.Row='1' Name='DismissButton' Content='Dismiss' HorizontalAlignment='Right' Padding='10,5' Margin='0,10,0,0' Cursor='Hand'/>
+                <Border Background='#DD333333' CornerRadius='8'>
+                    <Grid>
+                        <Button Name='NotifyCloseButton' Content='X' HorizontalAlignment='Right' VerticalAlignment='Top' Margin='5' Width='20' Height='20' Foreground='White' Background='Transparent' BorderThickness='0' Cursor='Hand' FontSize='10'/>
+                        <TextBlock Name='MessageText' HorizontalAlignment='Center' VerticalAlignment='Center' Foreground='White' FontSize='16' />
                     </Grid>
                 </Border>
             </Grid>";
 
-            var rootElement = (FrameworkElement)XamlReader.Parse(notificationXaml);
+            var rootElement = (FrameworkElement)XamlReader.Parse(notifyXaml);
             this.Content = rootElement;
 
-            var dismissButton = (Button)rootElement.FindName("DismissButton");
-            dismissButton.Click += (s, e) => this.Close();
+            var messageText = (TextBlock)rootElement.FindName("MessageText");
+            var closeButton = (Button)rootElement.FindName("NotifyCloseButton");
+
+            messageText.Text = message;
+            closeButton.Click += (s, e) => this.Close();
+
+            // Fade in animation
+            this.Opacity = 0;
+            var fadeInAnimation = new DoubleAnimation(1, TimeSpan.FromSeconds(0.5));
+            this.BeginAnimation(Window.OpacityProperty, fadeInAnimation);
         }
     }
 }
